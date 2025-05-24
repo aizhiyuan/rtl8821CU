@@ -1,0 +1,48 @@
+name: Build rtl8821CU Driver
+
+on: [push, workflow_dispatch]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        kernel: [ "5.15", "6.2", "6.5" ]  # 多内核版本编译
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y git dkms build-essential linux-headers-${{ matrix.kernel }}-generic
+
+    - name: Clone rtl8821CU driver
+      run: git clone https://github.com/brektrou/rtl8821CU.git
+
+    - name: Patch and build
+      run: |
+        cd rtl8821CU
+        # 修复内核兼容性问题
+        sed -i 's/prandom_u32()/get_random_u32()/g' os_dep/osdep_service.c
+        sed -i 's/EXTRA_CFLAGS += -Werror/#EXTRA_CFLAGS += -Werror/' Makefile
+        
+        # DKMS 编译
+        VER=$(grep "PACKAGE_VERSION" dkms.conf | cut -d '"' -f2)
+        sudo rsync -rvhP ./ /usr/src/rtl8821cu-$VER
+        sudo dkms build -m rtl8821cu -v $VER -k ${{ matrix.kernel }}-generic
+        sudo dkms install -m rtl8821cu -v $VER -k ${{ matrix.kernel }}-generic
+
+    - name: Package artifacts
+      run: |
+        cd /var/lib/dkms/rtl8821cu
+        tar czvf rtl8821cu-${{ matrix.kernel }}.tar.gz *
+        mkdir -p $GITHUB_WORKSPACE/artifacts
+        mv *.tar.gz $GITHUB_WORKSPACE/artifacts/
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: rtl8821cu-drivers
+        path: artifacts/
