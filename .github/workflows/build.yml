@@ -1,48 +1,60 @@
-name: Build rtl8821CU Driver
+name: Build rtl8821CU Driver for FNOS 6.12.18-trim
 
 on: [push, workflow_dispatch]
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        kernel: [ "5.15", "6.2", "6.5" ]  # 多内核版本编译
+    runs-on: ubuntu-22.04
+    env:
+      KERNEL_VERSION: "6.12.18-trim"  # 指定精确内核版本
 
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Install dependencies
+    - name: Install custom kernel headers
       run: |
-        sudo apt-get update
-        sudo apt-get install -y git dkms build-essential linux-headers-${{ matrix.kernel }}-generic
+        # 替换为你的内核头文件实际下载方式
+        wget https://example.com/path/to/fnos-headers-6.12.18-trim.deb
+        sudo dpkg -i fnos-headers-6.12.18-trim.deb
+        sudo apt-get install -y git dkms build-essential
 
-    - name: Clone rtl8821CU driver
-      run: git clone https://github.com/brektrou/rtl8821CU.git
+    - name: Clone patched driver repository
+      run: |
+        git clone https://github.com/White-Wolf1996/rtl8821CU.git -b linux6.12-fix
+        cd rtl8821CU
+        # 关键补丁
+        sed -i 's/prandom_u32/get_random_u32/g' os_dep/osdep_service.c
+        sed -i 's/__DATE__/"custom build"/g; s/__TIME__/""/g' core/rtw_debug.c
+        sed -i 's/-Werror/-Wno-error/' Makefile
 
-    - name: Patch and build
+    - name: DKMS build and install
       run: |
         cd rtl8821CU
-        # 修复内核兼容性问题
-        sed -i 's/prandom_u32()/get_random_u32()/g' os_dep/osdep_service.c
-        sed -i 's/EXTRA_CFLAGS += -Werror/#EXTRA_CFLAGS += -Werror/' Makefile
-        
-        # DKMS 编译
         VER=$(grep "PACKAGE_VERSION" dkms.conf | cut -d '"' -f2)
         sudo rsync -rvhP ./ /usr/src/rtl8821cu-$VER
-        sudo dkms build -m rtl8821cu -v $VER -k ${{ matrix.kernel }}-generic
-        sudo dkms install -m rtl8821cu -v $VER -k ${{ matrix.kernel }}-generic
+        
+        # 针对trimmed内核的特殊配置
+        sudo tee -a /usr/src/rtl8821cu-$VER/Makefile <<EOF
+        CONFIG_PLATFORM_I386_PC = n
+        CONFIG_PLATFORM_ARM_RPI = n
+        CONFIG_PLATFORM_CUSTOM = y
+        EOF
+        
+        sudo dkms build -m rtl8821cu -v $VER -k ${{ env.KERNEL_VERSION }}
+        sudo dkms install -m rtl8821cu -v $VER -k ${{ env.KERNEL_VERSION }}
 
     - name: Package artifacts
       run: |
-        cd /var/lib/dkms/rtl8821cu
-        tar czvf rtl8821cu-${{ matrix.kernel }}.tar.gz *
+        sudo mkdir -p /tmp/rtl8821cu
+        sudo cp -r /var/lib/dkms/rtl8821cu /tmp/
+        sudo chown -R $USER:$USER /tmp/rtl8821cu
+        tar czvf rtl8821cu-fnos-6.12.18-trim.tar.gz -C /tmp/rtl8821cu .
         mkdir -p $GITHUB_WORKSPACE/artifacts
         mv *.tar.gz $GITHUB_WORKSPACE/artifacts/
 
     - name: Upload artifacts
       uses: actions/upload-artifact@v3
       with:
-        name: rtl8821cu-drivers
-        path: artifacts/
+        name: rtl8821cu-fnos-driver
+        path: artifacts/rtl8821cu-fnos-6.12.18-trim.tar.gz
